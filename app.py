@@ -22,35 +22,37 @@ SYSTEM_PROMPT = (
 )
 
 
-def get_pdf_text_by_file(pdf_docs):
-    """Extract text from each PDF, keeping it grouped by source file."""
-    docs = []
+def get_pdf_pages_by_file(pdf_docs):
+    """Extract text per page, keeping each page's source file name and page number."""
+    pages = []
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
-        text = ""
-        for page in pdf_reader.pages:
+        for page_number, page in enumerate(pdf_reader.pages, start=1):
             extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        docs.append((pdf.name, text))
-    return docs
+            if extracted and extracted.strip():
+                pages.append((pdf.name, page_number, extracted))
+    return pages
 
 
-def get_text_chunks(docs):
-    """Split each document's text into chunks, tagging each with its source file."""
+def get_text_chunks(pages):
+    """Split each page's text into chunks, tagging each with its source file and page."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
         length_function=len,
     )
     chunks, metadatas = [], []
-    for filename, text in docs:
-        if not text.strip():
-            continue
+    for filename, page_number, text in pages:
         for chunk in splitter.split_text(text):
             chunks.append(chunk)
-            metadatas.append({"source": filename})
+            metadatas.append({"source": filename, "page": page_number})
     return chunks, metadatas
+
+
+def format_source(metadata):
+    source = metadata.get("source", "unknown")
+    page = metadata.get("page")
+    return f"{source} (p. {page})" if page else source
 
 
 def get_vectorstore(chunks, metadatas):
@@ -61,12 +63,12 @@ def get_vectorstore(chunks, metadatas):
 MODEL_OPTIONS = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
 
 
-def answer_question(vectorstore, question, chat_history, model, temperature):
+def build_messages(vectorstore, question, chat_history):
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
     relevant_docs = retriever.invoke(question)
 
     context = "\n\n".join(
-        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
+        f"[Source: {format_source(doc.metadata)}]\n{doc.page_content}"
         for doc in relevant_docs
     )
 
@@ -80,11 +82,21 @@ def answer_question(vectorstore, question, chat_history, model, temperature):
         HumanMessage(content=f"Context:\n{context}\n\nQuestion: {question}")
     )
 
-    llm = ChatOpenAI(model=model, temperature=temperature)
-    response = llm.invoke(messages)
+    sources = sorted({format_source(doc.metadata) for doc in relevant_docs})
+    return messages, sources
 
-    sources = sorted({doc.metadata.get("source", "unknown") for doc in relevant_docs})
-    return response.content, sources
+
+def stream_answer(vectorstore, question, chat_history, model, temperature):
+    """Returns a (token generator, sources) pair for the given question."""
+    messages, sources = build_messages(vectorstore, question, chat_history)
+    llm = ChatOpenAI(model=model, temperature=temperature)
+
+    def tokens():
+        for chunk in llm.stream(messages):
+            if chunk.content:
+                yield chunk.content
+
+    return tokens(), sources
 
 
 def init_session_state():
@@ -119,41 +131,58 @@ def handle_userinput(user_question):
         (m["role"], m["content"]) for m in st.session_state.chat_history[:-1]
     ]
 
+    placeholder = st.empty()
+    accumulated = ""
     try:
-        with st.spinner("Thinking..."):
-            answer, sources = answer_question(
-                st.session_state.vectorstore,
-                user_question,
-                history_so_far,
-                st.session_state.model,
-                st.session_state.temperature,
+        token_stream, sources = stream_answer(
+            st.session_state.vectorstore,
+            user_question,
+            history_so_far,
+            st.session_state.model,
+            st.session_state.temperature,
+        )
+        for token in token_stream:
+            accumulated += token
+            placeholder.write(
+                bot_template.replace("{{MSG}}", accumulated + "▌"),
+                unsafe_allow_html=True,
             )
     except Exception as exc:
+        placeholder.empty()
         st.session_state.chat_history.pop()
         st.error(f"Something went wrong while generating a response: {exc}")
         return
 
+    final_content = accumulated
+    if sources:
+        final_content += f"<br><small>Sources: {', '.join(sources)}</small>"
+    placeholder.write(bot_template.replace("{{MSG}}", final_content), unsafe_allow_html=True)
+
     st.session_state.chat_history.append(
-        {"role": "assistant", "content": answer, "sources": sources}
+        {"role": "assistant", "content": accumulated, "sources": sources}
     )
 
 
 def process_documents(pdf_docs):
     already_loaded = set(st.session_state.processed_files)
-    new_docs = [(pdf.name, pdf) for pdf in pdf_docs if pdf.name not in already_loaded]
+    new_files = [pdf for pdf in pdf_docs if pdf.name not in already_loaded]
 
-    if not new_docs:
+    if not new_files:
         st.info("All selected files are already loaded.")
         return
 
-    docs = get_pdf_text_by_file([pdf for _, pdf in new_docs])
-    chunks, metadatas = get_text_chunks(docs)
+    pages = get_pdf_pages_by_file(new_files)
+    chunks, metadatas = get_text_chunks(pages)
 
-    if not chunks:
-        st.error(
-            "No extractable text was found in the uploaded PDFs. "
+    extracted_names = {filename for filename, _, _ in pages}
+    empty_files = [pdf.name for pdf in new_files if pdf.name not in extracted_names]
+    if empty_files:
+        st.warning(
+            "No extractable text found in: " + ", ".join(empty_files) + ". "
             "They may be scanned images that need OCR first."
         )
+
+    if not chunks:
         return
 
     new_vectorstore = get_vectorstore(chunks, metadatas)
@@ -162,8 +191,9 @@ def process_documents(pdf_docs):
     else:
         st.session_state.vectorstore.merge_from(new_vectorstore)
 
-    st.session_state.processed_files.extend(name for name, _ in docs)
-    st.success(f"Processed {len(docs)} new file(s) into {len(chunks)} chunks.")
+    loaded_names = [pdf.name for pdf in new_files if pdf.name in extracted_names]
+    st.session_state.processed_files.extend(loaded_names)
+    st.success(f"Processed {len(loaded_names)} new file(s) into {len(chunks)} chunks.")
 
 
 def main():
