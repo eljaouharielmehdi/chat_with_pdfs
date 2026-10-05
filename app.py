@@ -58,7 +58,10 @@ def get_vectorstore(chunks, metadatas):
     return FAISS.from_texts(texts=chunks, embedding=embeddings, metadatas=metadatas)
 
 
-def answer_question(vectorstore, question, chat_history):
+MODEL_OPTIONS = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
+
+
+def answer_question(vectorstore, question, chat_history, model, temperature):
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
     relevant_docs = retriever.invoke(question)
 
@@ -77,7 +80,7 @@ def answer_question(vectorstore, question, chat_history):
         HumanMessage(content=f"Context:\n{context}\n\nQuestion: {question}")
     )
 
-    llm = ChatOpenAI(temperature=0)
+    llm = ChatOpenAI(model=model, temperature=temperature)
     response = llm.invoke(messages)
 
     sources = sorted({doc.metadata.get("source", "unknown") for doc in relevant_docs})
@@ -89,6 +92,8 @@ def init_session_state():
         "vectorstore": None,
         "chat_history": [],
         "processed_files": [],
+        "model": MODEL_OPTIONS[0],
+        "temperature": 0.0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -117,7 +122,11 @@ def handle_userinput(user_question):
     try:
         with st.spinner("Thinking..."):
             answer, sources = answer_question(
-                st.session_state.vectorstore, user_question, history_so_far
+                st.session_state.vectorstore,
+                user_question,
+                history_so_far,
+                st.session_state.model,
+                st.session_state.temperature,
             )
     except Exception as exc:
         st.session_state.chat_history.pop()
@@ -130,7 +139,14 @@ def handle_userinput(user_question):
 
 
 def process_documents(pdf_docs):
-    docs = get_pdf_text_by_file(pdf_docs)
+    already_loaded = set(st.session_state.processed_files)
+    new_docs = [(pdf.name, pdf) for pdf in pdf_docs if pdf.name not in already_loaded]
+
+    if not new_docs:
+        st.info("All selected files are already loaded.")
+        return
+
+    docs = get_pdf_text_by_file([pdf for _, pdf in new_docs])
     chunks, metadatas = get_text_chunks(docs)
 
     if not chunks:
@@ -140,10 +156,14 @@ def process_documents(pdf_docs):
         )
         return
 
-    st.session_state.vectorstore = get_vectorstore(chunks, metadatas)
-    st.session_state.processed_files = [name for name, _ in docs]
-    st.session_state.chat_history = []
-    st.success(f"Processed {len(docs)} file(s) into {len(chunks)} chunks.")
+    new_vectorstore = get_vectorstore(chunks, metadatas)
+    if st.session_state.vectorstore is None:
+        st.session_state.vectorstore = new_vectorstore
+    else:
+        st.session_state.vectorstore.merge_from(new_vectorstore)
+
+    st.session_state.processed_files.extend(name for name, _ in docs)
+    st.success(f"Processed {len(docs)} new file(s) into {len(chunks)} chunks.")
 
 
 def main():
@@ -185,6 +205,20 @@ def main():
             st.markdown("**Loaded documents:**")
             for name in st.session_state.processed_files:
                 st.markdown(f"- {name}")
+
+            if st.button("Remove all documents"):
+                st.session_state.vectorstore = None
+                st.session_state.processed_files = []
+                st.session_state.chat_history = []
+                st.rerun()
+
+        st.subheader("Model settings")
+        st.session_state.model = st.selectbox(
+            "Chat model", MODEL_OPTIONS, index=MODEL_OPTIONS.index(st.session_state.model)
+        )
+        st.session_state.temperature = st.slider(
+            "Temperature", min_value=0.0, max_value=1.0, value=st.session_state.temperature, step=0.1
+        )
 
         if st.session_state.chat_history:
             if st.button("Clear chat"):
