@@ -1,17 +1,21 @@
+import logging
 import os
 
 import streamlit as st
 import tiktoken
 from dotenv import load_dotenv
-from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pypdf import PdfReader
 
-from htmlTemplates import css, bot_template, user_template
+from htmlTemplates import bot_template, css, user_template
 
 load_dotenv()
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("chat_with_pdfs")
 
 APP_TITLE = "Chat with multiple PDFs"
 MAX_FILE_SIZE_MB = 20
@@ -61,9 +65,20 @@ def format_source(metadata):
     return f"{source} (p. {page})" if page else source
 
 
+@st.cache_resource(show_spinner=False)
+def get_embeddings():
+    return OpenAIEmbeddings()
+
+
+@st.cache_resource(show_spinner=False)
+def get_llm(model, temperature):
+    return ChatOpenAI(model=model, temperature=temperature)
+
+
 def get_vectorstore(chunks, metadatas):
-    embeddings = OpenAIEmbeddings()
-    return FAISS.from_texts(texts=chunks, embedding=embeddings, metadatas=metadatas)
+    return FAISS.from_texts(
+        texts=chunks, embedding=get_embeddings(), metadatas=metadatas
+    )
 
 
 MODEL_OPTIONS = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
@@ -123,7 +138,7 @@ def build_messages(vectorstore, question, chat_history):
 def stream_answer(vectorstore, question, chat_history, model, temperature):
     """Returns a (token generator, sources) pair for the given question."""
     messages, sources = build_messages(vectorstore, question, chat_history)
-    llm = ChatOpenAI(model=model, temperature=temperature)
+    llm = get_llm(model, temperature)
 
     def tokens():
         for chunk in llm.stream(messages):
@@ -182,6 +197,7 @@ def handle_userinput(user_question):
                 unsafe_allow_html=True,
             )
     except Exception as exc:
+        logger.exception("Failed to answer question: %s", user_question)
         placeholder.empty()
         st.session_state.chat_history.pop()
         st.error(f"Something went wrong while generating a response: {exc}")
@@ -238,6 +254,7 @@ def process_documents(pdf_docs):
 
     loaded_names = [pdf.name for pdf in new_files if pdf.name in extracted_names]
     st.session_state.processed_files.extend(loaded_names)
+    logger.info("Processed %d file(s) into %d chunks: %s", len(loaded_names), len(chunks), loaded_names)
     st.success(f"Processed {len(loaded_names)} new file(s) into {len(chunks)} chunks.")
 
 
@@ -274,6 +291,7 @@ def main():
                 try:
                     process_documents(pdf_docs)
                 except Exception as exc:
+                    logger.exception("Failed to process documents")
                     st.error(f"Failed to process documents: {exc}")
 
         if st.session_state.processed_files:

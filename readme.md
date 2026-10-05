@@ -60,11 +60,14 @@ Then open http://localhost:8501.
 
 ## Development
 -----------
-Run the test suite (covers the pure text-chunking logic; no API key required):
+Install dev dependencies and run the test suite and linter (no API key required):
 ```
-pip install pytest
+pip install -r requirements-dev.txt
+ruff check .
 pytest
 ```
+
+Set `LOG_LEVEL=DEBUG` (or any standard Python logging level) to get more verbose logs from document processing and question answering.
 
 ## Contributing
 ------------

@@ -1,6 +1,6 @@
 from langchain_core.documents import Document
 
-from app import get_text_chunks, format_source, select_context_docs
+from app import format_source, get_text_chunks, select_context_docs
 
 
 def test_get_text_chunks_splits_long_page_and_tags_source_and_page():

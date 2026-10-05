@@ -11,12 +11,10 @@ css = '''
 }
 .chat-message .avatar {
   width: 20%;
-}
-.chat-message .avatar img {
-  max-width: 78px;
-  max-height: 78px;
-  border-radius: 50%;
-  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
 }
 .chat-message .message {
   width: 80%;
@@ -27,14 +25,14 @@ css = '''
 
 bot_template = '''
 <div class="chat-message bot">
-    <div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:2.5rem;">🤖</div>
+    <div class="avatar">🤖</div>
     <div class="message">{{MSG}}</div>
 </div>
 '''
 
 user_template = '''
 <div class="chat-message user">
-    <div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:2.5rem;">🧑</div>
+    <div class="avatar">🧑</div>
     <div class="message">{{MSG}}</div>
 </div>
 '''
