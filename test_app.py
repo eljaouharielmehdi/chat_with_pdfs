@@ -1,4 +1,6 @@
-from app import get_text_chunks, format_source
+from langchain_core.documents import Document
+
+from app import get_text_chunks, format_source, select_context_docs
 
 
 def test_get_text_chunks_splits_long_page_and_tags_source_and_page():
@@ -36,3 +38,20 @@ def test_format_source_includes_page_number():
 
 def test_format_source_without_page_falls_back_to_filename():
     assert format_source({"source": "report.pdf"}) == "report.pdf"
+
+
+def test_select_context_docs_respects_token_budget():
+    big_doc = Document(page_content="word " * 5000, metadata={"source": "a.pdf", "page": 1})
+    small_doc = Document(page_content="short", metadata={"source": "b.pdf", "page": 1})
+
+    selected = select_context_docs([big_doc, small_doc], max_tokens=10)
+
+    assert selected == [big_doc]
+
+
+def test_select_context_docs_always_keeps_at_least_one_doc():
+    huge_doc = Document(page_content="word " * 50000, metadata={"source": "a.pdf", "page": 1})
+
+    selected = select_context_docs([huge_doc], max_tokens=1)
+
+    assert selected == [huge_doc]

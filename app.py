@@ -1,6 +1,7 @@
 import os
 
 import streamlit as st
+import tiktoken
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -13,6 +14,11 @@ from htmlTemplates import css, bot_template, user_template
 load_dotenv()
 
 APP_TITLE = "Chat with multiple PDFs"
+MAX_FILE_SIZE_MB = 20
+MAX_CONTEXT_TOKENS = 6000
+
+_token_encoding = None
+_token_encoding_unavailable = False
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions about the user's uploaded "
@@ -63,9 +69,37 @@ def get_vectorstore(chunks, metadatas):
 MODEL_OPTIONS = ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
 
 
+def count_tokens(text):
+    """Count tokens with tiktoken, falling back to a rough estimate if its
+    encoding data can't be loaded (e.g. no network access)."""
+    global _token_encoding, _token_encoding_unavailable
+
+    if not _token_encoding_unavailable and _token_encoding is None:
+        try:
+            _token_encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _token_encoding_unavailable = True
+
+    if _token_encoding is not None:
+        return len(_token_encoding.encode(text))
+    return max(1, len(text) // 4)
+
+
+def select_context_docs(docs, max_tokens=MAX_CONTEXT_TOKENS):
+    """Keep retrieved chunks within a token budget so large PDFs don't blow the model's context window."""
+    selected, total = [], 0
+    for doc in docs:
+        doc_tokens = count_tokens(doc.page_content)
+        if selected and total + doc_tokens > max_tokens:
+            break
+        selected.append(doc)
+        total += doc_tokens
+    return selected
+
+
 def build_messages(vectorstore, question, chat_history):
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
-    relevant_docs = retriever.invoke(question)
+    relevant_docs = select_context_docs(retriever.invoke(question))
 
     context = "\n\n".join(
         f"[Source: {format_source(doc.metadata)}]\n{doc.page_content}"
@@ -169,6 +203,17 @@ def process_documents(pdf_docs):
 
     if not new_files:
         st.info("All selected files are already loaded.")
+        return
+
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+    oversized = [pdf.name for pdf in new_files if pdf.size > max_bytes]
+    if oversized:
+        st.error(
+            f"Skipping file(s) larger than {MAX_FILE_SIZE_MB}MB: " + ", ".join(oversized)
+        )
+        new_files = [pdf for pdf in new_files if pdf.name not in oversized]
+
+    if not new_files:
         return
 
     pages = get_pdf_pages_by_file(new_files)

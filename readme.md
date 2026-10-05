@@ -11,19 +11,20 @@ The MultiPDF Chat App is a Python application that lets you chat with multiple P
 
 ![MultiPDF Chat App Diagram](./docs/PDF-LangChain.jpg)
 
-1. **PDF Loading** — the app reads each uploaded PDF and extracts its text, per file.
-2. **Text Chunking** — extracted text is split into overlapping chunks, each tagged with its source file name.
+1. **PDF Loading** — the app reads each uploaded PDF and extracts its text, per page.
+2. **Text Chunking** — each page's text is split into overlapping chunks, tagged with its source file name and page number.
 3. **Embeddings** — an OpenAI embedding model turns each chunk into a vector, stored in a local FAISS index.
-4. **Retrieval** — when you ask a question, the most relevant chunks are retrieved from the index.
-5. **Response Generation** — the retrieved chunks (plus recent chat history) are passed to a chat model, which answers using only that context and cites which file(s) it used.
+4. **Retrieval** — when you ask a question, the most relevant chunks are retrieved from the index, trimmed to a token budget so large PDFs can't overflow the model's context window.
+5. **Response Generation** — the retrieved chunks (plus recent chat history) are streamed through a chat model, which answers using only that context and cites the file(s)/page(s) it used.
 
 ## Features
 
-- Chat with one or more PDFs at once.
-- Source citations shown under every answer.
-- Graceful handling of missing API keys, empty uploads, and scanned PDFs with no extractable text (instead of crashing).
+- Chat with one or more PDFs at once; new uploads merge into the existing session instead of replacing it.
+- Answers stream in token-by-token, with source + page citations shown underneath.
+- Pick the chat model (gpt-4o-mini / gpt-4o / gpt-3.5-turbo) and temperature from the sidebar.
+- Graceful handling of missing API keys, empty uploads, oversized files, and scanned PDFs with no extractable text (instead of crashing).
 - Clear chat and download chat history as a `.txt` transcript.
-- List of currently loaded documents in the sidebar.
+- List of currently loaded documents in the sidebar, with a one-click reset.
 
 ## Dependencies and Installation
 ----------------------------
@@ -48,6 +49,14 @@ The MultiPDF Chat App is a Python application that lets you chat with multiple P
 4. Once processing finishes, ask questions about the documents in the main chat box.
 
 If `OPENAI_API_KEY` isn't set, the app still loads and tells you what's missing instead of crashing.
+
+## Running with Docker
+-------------------
+```
+docker build -t chat-with-pdfs .
+docker run -p 8501:8501 --env-file .env chat-with-pdfs
+```
+Then open http://localhost:8501.
 
 ## Development
 -----------
